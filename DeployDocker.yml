@@ -1,0 +1,58 @@
+---
+- hosts: 127.0.0.1
+  connection: local
+  become: true
+  become_method: sudo
+  tasks:
+  - name: Create repository file for Docker
+    file: path=/etc/apt/sources.list.d/docker.list state=touch
+  - name: get APT keys
+    apt_key: keyserver=hkp://p80.pool.sks-keyservers.net:80 id=58118E89F3A912897C070ADBF76221572C52609D
+  - name: Add Docker repositories to APT
+    lineinfile: dest=/etc/apt/sources.list.d/docker.list  line='deb https://apt.dockerproject.org/repo ubuntu-xenial main'
+    register: result
+  - name: Apt upate for docker repositories
+    apt: update_cache=yes
+    when: result|changed
+  - name: Install docker engine
+    apt: name=docker-engine state=present install_recommends=yes
+  - name: Start Docker service
+    service: name=docker state=started
+  - name: determine swarm status
+    shell: "docker info | egrep '^Swarm: ' | cut -d ' ' -f2"
+    register: swarm_status
+  - name: initialize swarm cluster
+    shell: docker swarm init --advertise-addr 192.168.33.10:2377
+    when: "'active' not in swarm_status.stdout_lines"
+  - name: retrieve swarm worker token
+    shell: docker swarm join-token -q worker
+    register: swarm_worker_token
+  - name: Tag as docker manager
+    shell: docker node update --role manager master
+    when: "'active' not in swarm_status.stdout_lines"
+
+- hosts: nodes
+  become: true
+  become_method: sudo
+  vars:
+    token: "{{ hostvars['localhost']['swarm_worker_token']['stdout'] }}"
+  tasks:
+  - name: get APT keys
+    apt_key: keyserver=hkp://p80.pool.sks-keyservers.net:80 id=58118E89F3A912897C070ADBF76221572C52609D
+  - name: Create repository file for Docker
+    file: path=/etc/apt/sources.list.d/docker.list state=touch
+  - name: Add Docker repositories to APT
+    lineinfile: dest=/etc/apt/sources.list.d/docker.list  line='deb https://apt.dockerproject.org/repo ubuntu-xenial main'
+    register: result
+  - name: Apt upate for docker repositories
+    apt: update_cache=yes
+    when: result|changed
+  - name: Install docker engine
+    apt: name=docker-engine state=present install_recommends=yes
+  - name: determine swarm status
+    shell: "docker info | egrep '^Swarm: ' | cut -d ' ' -f2"
+    register: swarm_status
+  - name: join worker nodes to cluster
+    shell: docker swarm join --token={{ token }} 192.168.33.10:2377
+    when: "'active' not in swarm_status.stdout_lines"
+
